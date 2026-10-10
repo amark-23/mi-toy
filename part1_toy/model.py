@@ -1,4 +1,4 @@
-"""Attention-only transformer for the induction task (built step by step)."""
+"""Attention-only transformer for the induction task."""
 
 from dataclasses import dataclass
 
@@ -107,3 +107,94 @@ class Attention(nn.Module):
         self.W_K = nn.Parameter(torch.randn(cfg.n_heads, cfg.d_model, cfg.d_head) * 0.02)
         self.W_V = nn.Parameter(torch.randn(cfg.n_heads, cfg.d_model, cfg.d_head) * 0.02)
         self.W_O = nn.Parameter(torch.randn(cfg.n_heads, cfg.d_head, cfg.d_model) * 0.02)
+
+    def forward(self, x):
+        """Compute multi-head causal attention.
+
+        Args:
+            x: Residual stream, shape (batch, pos, d_model).
+
+        Returns:
+            Attention output to add to the residual stream, shape (batch, pos, d_model).
+        """
+        # Per-head projections; each has shape (batch, head, pos, d_head)
+        q = torch.einsum("bpd,hde->bhpe", x, self.W_Q)
+        k = torch.einsum("bpd,hde->bhpe", x, self.W_K)
+        v = torch.einsum("bpd,hde->bhpe", x, self.W_V)
+
+        # Match scores between each query position and each key position
+        scores = torch.einsum("bhqe,bhke->bhqk", q, k) / self.cfg.d_head ** 0.5
+
+        # Causal mask: a position may only attend to itself and earlier positions
+        seq_len = x.shape[1]
+        mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device), diagonal=1)
+        scores = scores.masked_fill(mask, float("-inf"))
+
+        # Attention pattern: weights over earlier positions, each row sums to 1
+        pattern = scores.softmax(dim=-1)
+
+        # Weighted sum of values per head, shape (batch, head, pos, d_head)
+        z = torch.einsum("bhqk,bhke->bhqe", pattern, v)
+
+        # Map each head's result to d_model and sum over heads, shape (batch, pos, d_model)
+        return torch.einsum("bhqe,hed->bqd", z, self.W_O)
+
+
+class Unembed(nn.Module):
+    """Unembedding: maps the final residual stream to one score per token."""
+
+    def __init__(self, cfg: Config):
+        """Create the unembedding matrix W_U.
+
+        W_U has shape (d_model, vocab_size), initialized from a normal
+        distribution (mean 0, std 0.02).
+
+        Args:
+            cfg: Model configuration.
+        """
+        super().__init__()
+        self.W_U = nn.Parameter(torch.randn(cfg.d_model, cfg.vocab_size) * 0.02)
+
+    def forward(self, x):
+        """Compute the logits for every position.
+
+        Args:
+            x: Final residual stream, shape (batch, pos, d_model).
+
+        Returns:
+            Logits, shape (batch, pos, vocab_size).
+        """
+        return x @ self.W_U
+
+
+class Transformer(nn.Module):
+    """Attention-only transformer: embeddings, attention layers, unembedding."""
+
+    def __init__(self, cfg: Config):
+        """Create all components from the config.
+
+        Args:
+            cfg: Model configuration.
+        """
+        super().__init__()
+        self.cfg = cfg
+        self.embed = Embed(cfg)
+        self.pos_embed = PosEmbed(cfg)
+        self.layers = nn.ModuleList([Attention(cfg) for _ in range(cfg.n_layers)])
+        self.unembed = Unembed(cfg)
+
+    def forward(self, tokens):
+        """Compute next-token logits for every position.
+
+        Args:
+            tokens: Integer tensor of shape (batch, pos).
+
+        Returns:
+            Logits, shape (batch, pos, vocab_size).
+        """
+        # Start of the residual stream: token vector plus position vector
+        x = self.embed(tokens) + self.pos_embed(tokens)
+        # Each layer reads the stream and adds its output to it
+        for layer in self.layers:
+            x = x + layer(x)
+        return self.unembed(x)
