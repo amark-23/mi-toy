@@ -1,0 +1,14 @@
+# Core (Part 1: toy model written in plain PyTorch)
+torch
+numpy
+matplotlib
+einops
+tqdm
+jupyter
+
+# Part 2 (pretrained GPT-2 small + IOI). Added later, once we have checked
+# which library version is current and compatible:
+# transformer_lens   (or: nnsight)
+#
+# NOTE: versions are intentionally unpinned for now. After the first
+# successful install we will run `pip freeze` and pin exact versions.
