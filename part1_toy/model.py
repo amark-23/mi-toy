@@ -74,7 +74,19 @@ class PosEmbed(nn.Module):
         seq_len = tokens.shape[1]
         return self.W_pos[:seq_len]
 
+class HookPoint(nn.Module):
+    """Identity module that marks an activation so hooks can read or replace it."""
 
+    def forward(self, x):
+        """Return the input unchanged.
+
+        Args:
+            x: Any tensor.
+
+        Returns:
+            The same tensor.
+        """
+        return x
 class Attention(nn.Module):
     """Multi-head attention (parameters only; forward pass not written yet).
 
@@ -107,6 +119,10 @@ class Attention(nn.Module):
         self.W_K = nn.Parameter(torch.randn(cfg.n_heads, cfg.d_model, cfg.d_head) * 0.02)
         self.W_V = nn.Parameter(torch.randn(cfg.n_heads, cfg.d_model, cfg.d_head) * 0.02)
         self.W_O = nn.Parameter(torch.randn(cfg.n_heads, cfg.d_head, cfg.d_model) * 0.02)
+        
+        # Identity modules that expose internal activations to hooks
+        self.hook_pattern = HookPoint()  # (batch, head, query_pos, key_pos)
+        self.hook_z = HookPoint()        # (batch, head, pos, d_head)
 
     def forward(self, x):
         """Compute multi-head causal attention.
@@ -131,10 +147,10 @@ class Attention(nn.Module):
         scores = scores.masked_fill(mask, float("-inf"))
 
         # Attention pattern: weights over earlier positions, each row sums to 1
-        pattern = scores.softmax(dim=-1)
+        pattern = self.hook_pattern(scores.softmax(dim=-1))
 
         # Weighted sum of values per head, shape (batch, head, pos, d_head)
-        z = torch.einsum("bhqk,bhke->bhqe", pattern, v)
+        z = self.hook_z(torch.einsum("bhqk,bhke->bhqe", pattern, v))
 
         # Map each head's result to d_model and sum over heads, shape (batch, pos, d_model)
         return torch.einsum("bhqe,hed->bqd", z, self.W_O)
