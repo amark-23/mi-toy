@@ -179,8 +179,9 @@ token 20 positions back". That explains everything: for lengths 5 and 10 no
 position reaches 19, so the rule never fires (chance); for length 15, positions 20
 to 28 confidently copy from the wrong distance, and since the logits are
 unbounded (no normalization) a confident mistake costs about 61. This is inferred
-from losses only. Update (see 1.6): the fixed model's attention patterns on one sequence
-do not show a clean constant-offset stripe, so this explanation is not confirmed.
+from losses only. Update (see 1.6): the averaged attention profile of the fixed model is consistent
+with an offset-19 rule (all layer-1 heads peak at distance 19) but more diffuse than the variable
+model's; the profile at repeat length 15 (peak stays at 19, not 14) then confirmed the positional rule.
 Link to the research theme: equal accuracy, different mechanism.
 
 **Fix: variable repeat length.** `train` gained `half_len_range`; one repeat length
@@ -278,15 +279,186 @@ distance whatever the repeat length.
   induction head; role unknown.
 - Layer 0 (all four heads): broad, local, roughly diagonal patterns. By eye we cannot
   tell offset 0 (self) from offset 1 (previous token); this needs numbers.
-- Fixed-length model: layer-1 second-half patterns are fragmented (short stripes, a
-  vertical band, isolated points), not a single clean constant-offset stripe. This
-  does not match the simple "attend 19 back" story from 1.4, which is therefore not
-  confirmed by these plots (the loss tests still show the model fails off its
-  trained length).
+- Fixed-length model: on this one sequence the layer-1 second-half patterns look fragmented (short stripes, a vertical band, isolated points), not a single clean stripe. This turned out to be misleading, see the offset profile below.
+
+**Figures** (one random sequence each; rows are query positions, columns are key
+positions, white lines mark the boundary between the halves).
+
+![Attention patterns, variable-length model, repeat length 20](figures/patterns_varlen_len20.png)
+
+*Variable-length model, repeat length 20: in layer 1, L1H0, L1H2 and L1H3 show a
+stripe in the second half (key = query - 19).*
+
+![Attention patterns, variable-length model, repeat length 10](figures/patterns_varlen_len10.png)
+
+*Same model, repeat length 10: the stripe moves to key = query - 9.*
+
+![Attention patterns, fixed-length model, repeat length 20](figures/patterns_fixed_len20.png)
+
+*Fixed-length model, repeat length 20: fragmented on a single sequence; the averaged
+profile below shows why this is misleading.*
 
 Caveats: one sequence per plot, judged by eye; three of four layer-1 heads look
 alike (redundancy?). Next: an offset profile (mean attention per distance, averaged
 over many sequences) to get numbers, then ablations to test causal role.
+
+**Offset profile** (`part1_toy/analysis.py`; 256 sequences per run; mean attention
+weight at each distance back, over the predictable second-half queries).
+
+Variable-length model:
+- L1H0, L1H2, L1H3: weight 0.91, 0.83, 0.80 at offset 19 for repeat length 20, and
+  0.85, 0.78, 0.72 at offset 9 for length 10. The peak offset equals `half_len - 1` in
+  both cases. This confirms numerically that the stripe moves with the repeat length:
+  these three heads attend to the token after the earlier occurrence of the current
+  token.
+- L1H1: mostly self (0.17 at length 20, 0.83 at length 10), induction weight 0.03 to
+  0.05. Not an induction head.
+- Layer 0: all four heads attend mostly to themselves (0.37 to 0.76); previous-token
+  weight is only 0.10 to 0.15 at length 20 and 0.22 to 0.36 at length 10. They are not
+  clean previous-token heads, so how layer 1 gets the previous-token information is not
+  explained by the self and previous columns alone (the remaining weight is spread over
+  other offsets).
+
+Fixed-length model (length 20 only):
+- All four layer-1 heads peak at offset 19, with weights 0.29, 0.32, 0.12, 0.42, much
+  more diffuse than the variable model's 0.8 to 0.9. At a single repeat length, offset
+  19 cannot be told apart from induction, so this is consistent with the fixed-offset
+  rule but does not prove it.
+- Layer 0 heads attend far back (peak offset 18 for three heads, 37 for L0H2) with
+  small weights, unlike the variable model's local layer 0.
+- Correction: my earlier reading of the single-sequence plots ("does not match the
+  offset story") was premature; the averaged profile is consistent with it.
+- Decisive test (done): the fixed model's profile at repeat length 15. Peak at offset 19
+  would mean a fixed offset, peak at 14 would mean induction. Result: all four layer-1
+  heads still peak at offset 19, with weights 0.55, 0.60, 0.20 and 0.80 (L1H3 puts 0.80
+  on a single wrong distance), and put 0.00 to 0.06 on offset 14. So the fixed model
+  attends a fixed distance back, regardless of the repeat length: the positional
+  explanation from 1.4 is confirmed from the inside. This also explains the loss of 61
+  at length 15 (sharp attention at the wrong place).
+
+**Offset profile, summary tables.**
+
+Variable-length model, mean attention weight at the induction offset
+(`half_len - 1`) and the peak offset:
+
+| Head | Repeat length 20 (offset 19) | Repeat length 10 (offset 9) | Reading |
+|---|---|---|---|
+| L1H0 | 0.91 | 0.85 | induction |
+| L1H2 | 0.83 | 0.78 | induction |
+| L1H3 | 0.80 | 0.72 | induction |
+| L1H1 | 0.03 to 0.05 | 0.03 to 0.05 | not induction (mostly self: 0.17 and 0.83) |
+| L0H0 to L0H3 | not at the induction offset | not at the induction offset | mostly self (0.37 to 0.76), previous-token only 0.10 to 0.36 |
+
+Fixed-length model, layer 1 heads, peak offset and its weight at two repeat lengths
+(the decisive test: an induction head's peak moves with the repeat length, a
+positional head's does not):
+
+| Head | Length 20: peak, weight | Length 15: peak, weight | Weight at offset 14 (induction) |
+|---|---|---|---|
+| L1H0 | 19, 0.29 | 19, 0.55 | 0.00 to 0.06 |
+| L1H1 | 19, 0.32 | 19, 0.60 | 0.00 to 0.06 |
+| L1H2 | 19, 0.12 | 19, 0.20 | 0.00 to 0.06 |
+| L1H3 | 19, 0.42 | 19, 0.80 | 0.00 to 0.06 |
+
+The peak stays at 19 when the repeat length changes to 15, so the fixed model attends a
+fixed distance back, not the token after the earlier occurrence.
+
+## 1.7 Zero ablation of single heads
+
+**Theory.** So far we only *read* the model. Reading shows what a head attends to, not
+whether the network depends on it. An *intervention* tests that: change a head's
+contribution and see what happens to the loss. If removing a head raises the loss on
+the predictable half, the head is *necessary* for that behavior (on this
+distribution); if it changes nothing, the head is not needed for the task. Necessity
+is not the same as sufficiency, or as "this head implements X". Three caveats matter:
+1. *Redundancy*: if two heads do the same job, removing one hides its importance.
+2. *Off-distribution damage*: replacing a head's output with zeros gives the next
+   layers an input they never saw in training. With no layernorm in our model, logits
+   are unbounded, so the damage can be huge and partly an artifact.
+3. *Zero is an arbitrary baseline*: mean ablation (replace the output with its average
+   over data) removes the input-specific information but keeps activations in a normal
+   range, and is the cleaner test (still to do).
+
+**Decision rule, fixed before the run.** Measure the loss on the predictable second
+half. A rise above about 1.0 over the baseline is "large"; a rise below about 0.1 is
+"negligible"; in between is "moderate".
+
+**What we did.**
+- `make_zero_ablation_hook(head)` in `part1_toy/hooks.py`: a hook that returns a
+  *copy* of the `hook_z` output with one head's slice set to 0. Returning a tensor from
+  a forward hook replaces the module output; the `.clone()` avoids editing the original
+  tensor in place.
+- `run_with_ablation(model, tokens, heads)`: registers the hooks on
+  `layers[layer].hook_z` (the head result before `W_O`, so zeroing it removes exactly
+  that head's write to the residual stream), runs the model under `torch.no_grad()`,
+  and removes the hooks in `finally`.
+- `ablated_loss(...)` in `part1_toy/ablation.py`: averages the per-position loss over
+  10 batches of 256 fresh sequences, reporting first half (positions before the
+  boundary) and second half separately. `set_seed(0)` is called before every
+  measurement so all conditions see the same sequences (fair comparison).
+- Sweep: baseline plus each of the 8 heads, repeat length 20, for both models.
+
+**Sanity check.** The no-ablation baselines (fixed 0.061, variable 0.035) match the
+earlier evaluation (0.058 and 0.033), so the machinery does not disturb the model.
+
+**Results** (second-half loss; first-half loss in the last column, where chance is
+about 4.6):
+
+Variable-length model (baseline: first 4.725, second 0.035)
+
+| Ablated | Second-half loss | Rise | Verdict | First-half loss |
+|---|---|---|---|---|
+| L0H0 | 0.884 | 0.85 | moderate | 4.974 |
+| L0H1 | 1.710 | 1.68 | large | 5.377 |
+| L0H2 | 1.115 | 1.08 | large | 5.314 |
+| L0H3 | 0.908 | 0.87 | moderate | 5.142 |
+| L1H0 | 1.589 | 1.55 | large | 6.796 |
+| L1H1 | 0.030 | -0.005 | negligible | 8.006 |
+| L1H2 | 1.166 | 1.13 | large | 6.417 |
+| L1H3 | 0.887 | 0.85 | moderate | 6.155 |
+
+Fixed-length model (baseline: first 4.664, second 0.061)
+
+| Ablated | Second-half loss | Rise | Verdict | First-half loss |
+|---|---|---|---|---|
+| L0H0 | 6.827 | 6.77 | large | 9.547 |
+| L0H1 | 9.029 | 8.97 | large | 5.945 |
+| L0H2 | 17.100 | 17.04 | large | 10.164 |
+| L0H3 | 3.633 | 3.57 | large | 7.957 |
+| L1H0 | 0.588 | 0.53 | moderate | 9.515 |
+| L1H1 | 5.612 | 5.55 | large | 30.349 |
+| L1H2 | 0.066 | 0.005 | negligible | 4.662 |
+| L1H3 | 14.298 | 14.24 | large | 42.999 |
+
+![Single-head zero ablation, both models](figures/ablation_single_head.png)
+
+*Second-half loss after ablating each head (log scale). Solid line: baseline; dashed
+line: baseline + 1.0. This figure was drawn from the numbers in the tables above.*
+
+**Reading the results.**
+- *Variable-length model.* Every layer-0 head and the three induction heads (L1H0,
+  L1H2, L1H3) raise the loss to 0.9 to 1.7, but none breaks the model completely (an
+  unrelated token would cost about 4.6): consistent with partial redundancy. L1H1 is
+  negligible (0.030 vs 0.035), matching the offset profile, where it shows no induction
+  attention: it is not part of the copying. The layer-0 result fits the circuit
+  picture (induction needs a previous-token signal), but all four layer-0 heads
+  contribute, not one or two clean previous-token heads.
+- *Fixed-length model.* Much more fragile: six of eight heads are large, some
+  catastrophic. Only L1H2 is negligible and L1H0 moderate, so the positional solution
+  is concentrated in few heads.
+- *Off-distribution caveat.* First-half losses far above 4.6 (up to 43) cannot be
+  "missing information": a model that has lost a feature should be at chance, not far
+  worse. They show that zeroing pushes the unnormalized network outside its training
+  range. The size of the fixed model's numbers, and the ranking among its large
+  effects, should not be over-interpreted.
+- *What this does and does not show.* Zero ablation supports "removing this head
+  hurts or does not hurt on this task". It does not show that a head implements a
+  given function, or that the listed heads form the complete circuit.
+
+**Next.** Group ablation of the three induction heads together (the loss near 4.6 would
+mean they are the whole copying mechanism, much lower would mean the circuit is
+larger); mean ablation to test the off-distribution artifact; then direct logit
+attribution and activation patching.
 
 ---
 

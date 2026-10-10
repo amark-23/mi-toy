@@ -31,15 +31,16 @@ mi-toy/
 ## Roadmap
 
 ### Part 1: toy model, plain PyTorch
-- [ ] Synthetic task: repeated random token sequences (induction)
-- [ ] Tiny attention-only transformer (1-2 layers)
-- [ ] Training loop
-- [ ] Check the model learned the task (loss, accuracy on the repeated half)
-- [ ] Forward hooks to read and write activations
+- [x] Synthetic task: repeated random token sequences (induction)
+- [x] Tiny attention-only transformer (2 layers)
+- [x] Training loop
+- [x] Check the model learned the task (loss, accuracy on the repeated half)
+- [x] Test on other repeat lengths; train a second model with variable repeat length
+- [x] Hook points; read activations (cache)
+- [x] Attention patterns and offset profile; verify the heads (induction in the variable model, fixed offset in the fixed model)
+- [ ] Write activations through hooks: zero ablation and mean ablation of single heads
 - [ ] Direct logit attribution (residual stream decomposition)
-- [ ] Zero ablation and mean ablation of single heads
 - [ ] Activation patching (clean vs corrupted prompt)
-- [ ] Verify the discovered heads show the induction attention pattern
 - [ ] Optional: repeat training with 3-5 seeds and compare which heads matter
 
 ### Part 2: GPT-2 small + IOI
@@ -124,4 +125,4 @@ python part1_toy/test.py      # sanity checks: shapes, parameter count, initial 
 
 ## Status
 
-Part 1: data, model and training loop written; first training run pending.
+Part 1: toy models trained and verified (induction heads in the variable-length model, positional shortcut in the fixed-length one); single-head zero ablation done, group and mean ablation next.
