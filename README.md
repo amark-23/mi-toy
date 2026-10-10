@@ -61,13 +61,57 @@ mi-toy/
 
 ## Setup
 
-```bash
-python -m venv .venv
-# Windows:  .venv\Scripts\activate
-# Linux/Mac: source .venv/bin/activate
-pip install -r requirements.txt
-```
+Tested on Windows 11 with Python 3.13.5 and CPU-only PyTorch (no NVIDIA GPU).
+Part 1 (tiny model) runs fine on CPU.
+
+1. Create the virtual environment (from the repo root):
+
+   ```bat
+   py -3.13 -m venv .venv
+   ```
+
+   Use whichever Python 3.x version you have; `py -0` lists them.
+
+2. Activate it. The command depends on your terminal:
+
+   ```bat
+   :: Windows cmd.exe
+   .venv\Scripts\activate.bat
+   ```
+   ```powershell
+   # Windows PowerShell (may need: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned)
+   .venv\Scripts\Activate.ps1
+   ```
+   ```bash
+   # Linux / macOS
+   source .venv/bin/activate
+   ```
+
+   The prompt should start with `(.venv)`.
+
+3. Upgrade pip and install the dependencies:
+
+   ```bash
+   python -m pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+   This installs the CPU build of PyTorch. With an NVIDIA GPU, install the
+   matching CUDA build first using the selector at
+   https://pytorch.org/get-started/locally/, then run the last command.
+
+4. Check the installation:
+
+   ```bash
+   python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+   ```
+
+   Expected on this setup: `2.14.1+cpu False`.
+
+5. VS Code only: select the venv interpreter (`Ctrl+Shift+P`, then
+   "Python: Select Interpreter", then the `.venv` entry). Otherwise the
+   editor reports unresolved imports even though they are installed.
 
 ## Status
 
-Scaffold created. No code yet.
+Scaffold and environment ready. Starting Part 1 (`part1_toy/utils.py`: seeding).
