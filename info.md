@@ -179,7 +179,8 @@ token 20 positions back". That explains everything: for lengths 5 and 10 no
 position reaches 19, so the rule never fires (chance); for length 15, positions 20
 to 28 confidently copy from the wrong distance, and since the logits are
 unbounded (no normalization) a confident mistake costs about 61. This is inferred
-from losses only and still has to be confirmed with attention patterns.
+from losses only. Update (see 1.6): the fixed model's attention patterns on one sequence
+do not show a clean constant-offset stripe, so this explanation is not confirmed.
 Link to the research theme: equal accuracy, different mechanism.
 
 **Fix: variable repeat length.** `train` gained `half_len_range`; one repeat length
@@ -232,10 +233,10 @@ changing or switching off a head.
 
 **What does not change.** The computation, the 48,128 parameters, and the saved
 checkpoints (the hook modules have no weights, so the weight names are the same).
-Regression check: rerunning `evaluate.py` must give exactly the same output as
-before the change, because nothing numerical changed.
+Regression check passed: rerunning `evaluate.py` after the change gave exactly the
+same eight result lines as before, as expected since nothing numerical changed.
 
-## 1.6 Reading activations (run_with_cache)
+## 1.6 Reading activations and attention patterns
 
 **Theory.** Reading an activation means attaching a hook that stores a copy of the
 tensor passing through. Doing this for all hook points in one forward pass gives a
@@ -245,9 +246,47 @@ a stripe where, at a second-half position holding token `K`, the weight
 concentrates on the position right after the earlier `K`; for a previous-token head
 we expect a stripe one position back.
 
-**What we did.** _In progress: `run_with_cache` in `part1_toy/hooks.py`._
+**What we did.** `run_with_cache(model, tokens)` in `part1_toy/hooks.py` attaches a
+reading hook to every `hook_pattern` and `hook_z`, runs the model under
+`torch.no_grad()`, and always removes the hooks afterwards (`try/finally`), because
+leftover hooks would keep overwriting cache entries in later runs. Each hook stores
+`output.detach()` (values, no gradient graph) and returns nothing, so the model is
+unchanged. Keys are the dotted module names, e.g. `layers.1.hook_pattern`. Check on
+the variable-length model with 4 sequences of repeat length 10 (20 tokens): patterns
+have shape `(4, 4, 20, 20)` and per-head results `(4, 4, 20, 16)` for both layers, as
+expected.
 
-**Results.** _Pending._
+**Reading the plots (planned).** Rows are query positions (the position attending),
+columns are key positions (the position attended to). Expected signatures: a
+previous-token head shows a stripe one position below the diagonal; an induction head
+shows, in the second half, a stripe where the query at position `i + half_len` attends
+to key `i + 1`, i.e. the key position is `query - half_len + 1`, so the stripe shifts
+with the repeat length. A fixed-offset (positional) head would stay at the same
+distance whatever the repeat length.
+
+**Results (one random sequence per plot, so qualitative only).**
+- Variable-length model, repeat length 20: layer-1 heads L1H0, L1H2 and L1H3 show, in
+  the second half, a sharp stripe from (query 20, key 1) to (query 39, key 19), i.e.
+  key = query - 19, the position right after the earlier occurrence of the current
+  token. In the first half these heads attend to themselves (main diagonal), where
+  there is nothing to look back at.
+- Same model, repeat length 10: the same three heads show the stripe at
+  key = query - 9. The stripe moved with the repeat length, as an induction head's
+  should and a fixed-offset head's cannot.
+- L1H1 behaves differently: at length 20 it attends around the boundary (keys 19 to
+  22) in the second half, and at length 10 it mostly attends to itself. Not a clean
+  induction head; role unknown.
+- Layer 0 (all four heads): broad, local, roughly diagonal patterns. By eye we cannot
+  tell offset 0 (self) from offset 1 (previous token); this needs numbers.
+- Fixed-length model: layer-1 second-half patterns are fragmented (short stripes, a
+  vertical band, isolated points), not a single clean constant-offset stripe. This
+  does not match the simple "attend 19 back" story from 1.4, which is therefore not
+  confirmed by these plots (the loss tests still show the model fails off its
+  trained length).
+
+Caveats: one sequence per plot, judged by eye; three of four layer-1 heads look
+alike (redundancy?). Next: an offset profile (mean attention per distance, averaged
+over many sequences) to get numbers, then ablations to test causal role.
 
 ---
 
