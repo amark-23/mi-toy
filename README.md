@@ -112,6 +112,16 @@ Part 1 (tiny model) runs fine on CPU.
    "Python: Select Interpreter", then the `.venv` entry). Otherwise the
    editor reports unresolved imports even though they are installed.
 
+## Running Part 1
+
+Scripts in `part1_toy/` import each other directly (`from model import ...`),
+so run them from that folder or point Python at the file:
+
+```bash
+python part1_toy/train.py     # trains the toy model, logs first/second-half loss
+python part1_toy/test.py      # sanity checks: shapes, parameter count, initial loss
+```
+
 ## Status
 
-Scaffold and environment ready. Starting Part 1 (`part1_toy/utils.py`: seeding).
+Part 1: data, model and training loop written; first training run pending.
