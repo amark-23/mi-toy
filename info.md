@@ -721,9 +721,248 @@ RMS. Drawn from the table, not from a script in the repo.*
   calibration head: the cancellation is a property of the layers, with L1H1 one
   contributor (the largest first-half RMS of the four).
 
-**Next.** Check the "equal and opposite" claim directly: the correlation between the
-layer-0 sum and the layer-1 sum (expected close to $-1$) and between the layer-0 sum
-and each layer-1 head, to see which heads do the cancelling. Then activation patching.
+- *Equal and opposite?* (`cancellation_slope` in `attribution.py`). Let $a$ be the
+  first-half contribution of the layer-0 sum and $b$ that of the layer-1 sum, one
+  number per (sequence, position). The Pearson correlation and the regression slope of
+  $b$ on $a$ are
+
+  $$
+  r = \frac{\operatorname{Cov}(a,b)}{\sigma_a\sigma_b}, \qquad
+  \beta = \frac{\operatorname{Cov}(a,b)}{\operatorname{Var}(a)} = \sum_{h}\beta_h,
+  \qquad \beta_h = \frac{\operatorname{Cov}(a,b_h)}{\operatorname{Var}(a)} .
+  $$
+
+  $\beta=-1$ means layer 1 exactly undoes layer 0 ($r$ ignores scale, $\beta$ does).
+  By linearity of covariance, the per-head slopes $\beta_h$ add up to the total, so
+  each is that head's share of the cancellation.
+
+  | Model | $r$ | $\beta$ | L1H0 | L1H1 | L1H2 | L1H3 |
+  |---|---|---|---|---|---|---|
+  | Fixed | -1.000 | -1.017 | -0.075 | -0.388 | -0.000 | -0.554 |
+  | Variable | -0.955 | -1.118 | -0.824 | **+0.906** | -0.678 | -0.521 |
+
+  ![Share of each layer-1 head in cancelling layer 0](figures/dla_cancellation_beta.png)
+
+  *Drawn from the table, not from a script in the repo.*
+
+- *Reading it.* The shares add up to the totals (checks the code). Fixed model: layer
+  1's first-half pattern is the negative of layer 0's ($r=-1.000$, $\beta=-1.017$),
+  carried by L1H3 (54%) and L1H1 (38%); L1H2 does nothing, as everywhere else.
+  Variable model: nearly the same cancellation ($r=-0.955$), but the three induction
+  heads *over*-cancel (their shares sum to $-2.02$, twice what is needed) and L1H1 has a
+  positive share ($+0.91$) that adds back about half of the overshoot. So in the
+  variable model L1H1 is a trim on the induction heads' side effect, not a direct
+  canceller of layer 0. This also explains two earlier results: removing L1H1 leaves the
+  second half untouched (0.028) but raises the first-half loss to 8.0 (the overshoot is
+  no longer trimmed), and removing the three induction heads leaves L1H1 pushing in a
+  direction nothing balances (second-half loss 7.9, above chance).
+- *Scoring the predictions.* Fixed model as predicted (L1H1 and L1H3 carry it). Variable
+  model: $\beta=-1.118$ just outside the range I had set ($[-1.1,-0.7]$), and the
+  opposite-sign head was not predicted.
+- *Limits.* This is a regression within the first half: it shows the two patterns are
+  tightly coupled, not why. A plausible mechanism (untested): in the first half the
+  layer-1 heads mostly attend to themselves, so they read the residual stream at their
+  own position, which contains layer 0's output, and write a transformed copy of it. If
+  the weights implement "$-1$ times layer 0" this can be checked directly in the OV
+  circuits, and causally by patching layer 0's output and watching layer 1's response.
+
+**Next.** Activation patching (clean vs corrupted run), which gives causal effects
+without the zero/mean ablation baselines; optionally a weight-level check of the
+cancellation in the layer-1 OV circuits.
+
+
+## 1.9 Activation patching
+
+**Theory.** Ablation asks what breaks when a part is removed; patching asks what is
+restored (or destroyed) when a part's activation is swapped between two runs that differ
+in exactly the thing we care about. The replacement is a real activation the network has
+produced before, so there is no zero or mean baseline to argue about, and the whole
+model is run again, so indirect effects count (unlike DLA). *Denoising* puts the clean
+activation into the corrupted run and asks what is restored (sufficiency);
+*noising* puts the corrupted activation into the clean run and asks what is destroyed
+(necessity).
+
+**Setup.** Clean input $[A\,|\,A]$; corrupted input $[A'\,|\,A]$ with a fresh random
+first half and the same second half, so the targets at second-half positions are
+identical and only the context the induction rule needs is destroyed. Metric: the mean
+centered logit of the true next token over second-half positions (the DLA quantity),
+
+$$
+m=\frac1N\sum_{b,\,p\ge L}\Big(\ell_{b,p}[t_{b,p+1}]-\frac1{|V|}\sum_v\ell_{b,p}[v]\Big),
+\qquad
+\text{recovery}(c)=\frac{m_{\text{patched}(c)}-m_{\text{corrupt}}}{m_{\text{clean}}-m_{\text{corrupt}}} .
+$$
+
+**What we did** (`part1_toy/patching.py`): `make_corrupted`, `correct_logit`,
+`make_patch_hook(head, clean_z, positions)` (like the ablation hook, overwriting a head's
+`hook_z` at a position slice from a cache) and `run_with_patch(model, tokens, cache,
+patches)`. Each patch is a `(layer, head, positions)` triple.
+
+**Checks.**
+- Clean metric equals the DLA total on the same batch: 51.526 (fixed), 13.232 (variable).
+- Corrupted metric: 0.331 (fixed), 0.055 (variable). I had predicted a large negative
+  value for the fixed model and was wrong: the boosted token is independent of the true
+  target, so the mean centered logit is about 0 (the damage shows in the variance, not the
+  mean).
+- Patching every head at every position into the corrupted run reproduces the clean
+  metric exactly (51.526 and 13.232): the second-half logits depend only on the
+  second-half embeddings (identical in both runs) and the head outputs.
+
+**Predictions written before the sweep:** (1) layer-1 heads: first-half column exactly 0
+and `all` equal to `second half`, since nothing reads a last-layer head except $W_U$ at
+the same position; (2) layer-1 second-half recovery equals the DLA share,
+$\text{DLA}_{\text{clean}}(h)/(m_{\text{clean}}-m_{\text{corrupt}})$; (3) layer-0 heads
+matter through first-half positions (keys), with at least one variable-model head above
+0.1.
+
+**Results** (256 sequences, repeat length 20; recovery, denoising).
+
+| Head | Fixed: first-half | Fixed: second-half | Variable: first-half | Variable: second-half |
+|---|---|---|---|---|
+| L0H0 | 0.247 | 0.029 | 0.018 | -0.001 |
+| L0H1 | 0.302 | 0.035 | 0.034 | -0.003 |
+| L0H2 | 0.194 | 0.028 | 0.021 | -0.002 |
+| L0H3 | 0.145 | 0.001 | 0.025 | -0.002 |
+| L1H0 | 0.000 | 0.058 | 0.000 | 0.391 |
+| L1H1 | 0.000 | 0.371 | 0.000 | -0.020 |
+| L1H2 | 0.000 | 0.000 | 0.000 | 0.342 |
+| L1H3 | 0.000 | 0.666 | 0.000 | 0.288 |
+
+(The `all` column was equal to first-half plus second-half to within 0.002 for layer 0,
+and equal to second-half for layer 1.)
+
+![Patching recovery](figures/patching_recovery.png)
+
+*Drawn from the table, not from a script in the repo.*
+
+**What we learned.**
+- *Predictions 1 and 2 hold exactly.* Layer-1 first-half columns are all 0.000, and the
+  second-half recoveries match the DLA-derived values within 0.005 (variable: 0.387,
+  -0.016, 0.339, 0.285 predicted vs 0.391, -0.020, 0.342, 0.288; fixed: 0.056, 0.373,
+  0.000, 0.666 vs 0.058, 0.371, 0.000, 0.666). For the last layer, patching and DLA are
+  the same measurement. The variable model's layer-1 recoveries sum to 1.001; the fixed
+  model's to 1.095, the excess being its layer 0's negative direct contribution (about
+  -0.09 of the gap).
+- *Prediction 3 half right.* In both models layer 0 matters through first-half
+  positions, not second-half ones. But the variable model's best single layer-0 head is
+  0.034, not above 0.1. I overlooked a limit of the design: patching $z$ cannot repair
+  the corrupted *embeddings* of the first half. An induction head finds a position by its
+  key and copies the token stored there, and in the variable model that token identity
+  lives in the embedding (its layer 0 writes little directly, RMS about 0.65), so a clean
+  key arrives at a corrupted value and the copy is still wrong. A low denoising recovery
+  therefore does not mean layer 0 is unimportant (ablating all of layer 0 sent the loss
+  to chance); it means layer 0 alone cannot restore the behavior in this setup. In the
+  fixed model layer 0 writes large patterns that evidently carry token identity (RMS 9
+  to 13), and patching a head restores 15% to 30%.
+
+### Noising and the layer-0 group
+
+**What we added.** `corrupt_cache = run_with_cache(model, corrupted)`, then the same
+function with the arguments swapped, `run_with_patch(model, clean, corrupt_cache, ...)`;
+the metric is reported as the *drop* $(m_{\text{clean}}-m_{\text{noised}})/(m_{\text{clean}}-m_{\text{corrupt}})$.
+Noising keeps the clean embeddings (the values) and damages only what the patched
+component writes, so it tests necessity; denoising tests sufficiency. The four layer-0
+heads were also patched together, in both directions.
+
+**Predictions written before the run:** (1) layer-1 noising rows equal the denoising
+second-half column exactly (denoising changes the logits by
+$(z_{\text{clean}}-z_{\text{corrupt}})W_OW_U$, noising by the negative of that);
+(2) variable model: every layer-0 head has a clearly nonzero first-half drop, and the
+group drop far exceeds the largest single one; (3) layer-0 heads at second-half
+positions: small drop; (4) fixed model group: unknown. All four held.
+
+**Results** (drop, noising; recovery, denoising; repeat length 20).
+
+| Head | Fixed: first-half drop | Fixed: second-half drop | Variable: first-half drop | Variable: second-half drop |
+|---|---|---|---|---|
+| L0H0 | 0.253 | 0.030 | 0.344 | -0.002 |
+| L0H1 | 0.302 | 0.036 | 0.506 | -0.002 |
+| L0H2 | 0.193 | 0.028 | 0.387 | 0.000 |
+| L0H3 | 0.144 | 0.001 | 0.390 | -0.001 |
+| L1H0 to L1H3 | 0.000 | equal to the denoising column | 0.000 | equal to the denoising column |
+
+All four layer-0 heads together:
+
+| Model | Positions | Recovery (denoising) | Drop (noising) |
+|---|---|---|---|
+| Fixed | first half | 0.889 | 0.888 |
+| Fixed | second half | 0.094 | 0.094 |
+| Fixed | all | 0.983 | 0.982 |
+| Variable | first half | 0.275 | 0.979 |
+| Variable | second half | -0.006 | -0.003 |
+| Variable | all | 0.272 | 0.972 |
+
+![Layer-0 patching, single heads, sum and group](figures/patching_layer0_noising.png)
+
+*Drawn from the tables, not from a script in the repo.*
+
+**What we learned.**
+- *Layer-1 noising equals denoising, exactly* (to three decimals), the linearity argument
+  and a check of the code.
+- *Variable model: the key side lives in layer 0 at first-half positions, shared by all
+  four heads.* Noising one head drops 0.34 to 0.51, all four together 0.98 (the singles
+  sum to 1.63, so the effects overlap: redundancy). At second-half positions layer 0
+  has no effect (-0.003 to 0.000): the queries need only the current token's embedding.
+  This is the K-composition structure, and it localizes the earlier "ablating all of
+  layer 0 sends the loss to chance" result to the first half. (We have shown where the
+  signal is and that layer 0 is necessary there; that the content is "previous token"
+  is not shown here.)
+- *The denoising/noising asymmetry in the variable model is an AND-gate.* Noising one
+  layer-0 head drops 0.34 to 0.51, denoising one restores only 0.02 to 0.03, and
+  denoising all four restores only 0.275: the behavior needs a clean key (layer 0, first
+  half) and a clean value (the first-half embedding), and denoising layer 0 alone leaves
+  the corrupted value in place.
+- *Fixed model: additive, content-carrying layer 0.* Layer 0 at the first half is both
+  nearly sufficient (0.889) and nearly necessary (0.888), the single-head effects add up
+  (recovery 0.888, drop 0.892, group 0.889/0.888) and recovery equals drop: no gate. Its
+  layer 0 carries the content in a linear way (consistent with its large direct logit
+  contributions, DLA RMS 9 to 13), and layer 1 reads it from a fixed offset.
+- *A candidate signature for "same behavior, different mechanism".* Compare the sum of
+  single-component effects with the group effect: fixed 0.892 vs 0.888 (additive),
+  variable 1.627 vs 0.979 (sub-additive in drop) and 0.098 vs 0.275 (super-additive in
+  recovery). A quantitative interaction measure like this could be compared across seeds
+  and training distributions.
+
+**Limits.** One seed per model; one corruption scheme; one repeat length. The
+"AND-gate" is the simplest reading of the asymmetry, not a tested mechanism.
+
+
+## 1.10 Several seeds: are the circuits stable?
+
+**Question.** Everything so far comes from one seed per training distribution. Do the
+mechanisms we found (three induction heads and a trim head in the variable-length model;
+an additive, content-carrying layer 0 in the fixed-length model) belong to the training
+distribution, or to that seed?
+
+**A methodological point.** Within a layer the heads are exchangeable: permuting the four
+$(W_Q,W_K,W_V,W_O)$ slices of a layer gives a network that computes exactly the same
+function. So "L1H2" has no meaning across seeds, and comparisons must be
+permutation-invariant: counts, sorted values, and roles defined by behavior (attention
+offset, logit contribution), never by index.
+
+**Design.** Two training distributions (`fixed`: repeat length 20; `varlen`: lengths 5
+to 20) times five seeds (0 to 4), all 15,000 steps (this also removes the earlier
+10,000 vs 15,000 mismatch). Checkpoints in `part1_toy/checkpoints/` (gitignored). Per model,
+permutation-invariantly: (1) second-half loss at the training length; (2) number and
+strength of induction heads among the layer-1 heads (offset-profile peak at $L-1$);
+(3) sorted DLA shares of the layer-1 heads and whether a "trim" head exists (near-zero
+or negative contribution with a large first-half RMS); (4) layer 0's first-half RMS and
+the cancellation slope $\beta$ of layer 1 on layer 0; (5) for `fixed`, the loss at
+repeat length 15.
+
+**Predictions written before any run.**
+- H1: all 10 models reach second-half loss below 0.1 at their training length.
+- H2: mechanism type follows the training distribution, not the seed: all five `fixed`
+  models have loss above 5 at repeat length 15, and every `varlen` model has at least two
+  induction heads.
+- H3: circuit details vary across `varlen` seeds: three induction heads in a majority
+  but not all five seeds (my range: 2 to 4), and a trim head in at least 3 of 5.
+- H4: layer 0's first-half RMS in every `fixed` seed is at least 5 times that of the
+  `varlen` models, and $\beta\in[-1.2,-0.8]$ for all 10 models.
+- Surprises to watch for: a `fixed` seed with a different positional offset scheme, or
+  a seed that fails to learn.
+
+_Results pending._
 
 ---
 

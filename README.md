@@ -40,7 +40,7 @@ mi-toy/
 - [x] Attention patterns and offset profile; verify the heads (induction in the variable model, fixed offset in the fixed model)
 - [x] Write activations through hooks: zero ablation and mean ablation of single heads and groups
 - [x] Direct logit attribution (residual stream decomposition)
-- [ ] Activation patching (clean vs corrupted prompt)
+- [x] Activation patching (clean vs corrupted prompt)
 - [ ] Optional: repeat training with 3-5 seeds and compare which heads matter
 
 ### Part 2: GPT-2 small + IOI
@@ -125,4 +125,4 @@ python part1_toy/test.py      # sanity checks: shapes, parameter count, initial 
 
 ## Status
 
-Part 1: toy models trained and verified (induction heads in the variable-length model, positional shortcut in the fixed-length one); single-head and group ablation (zero and mean) done, direct logit attribution done (layer 1 cancels layer 0's logit pattern in the first half), activation patching next.
+Part 1: toy models trained and verified (induction heads in the variable-length model, positional shortcut in the fixed-length one); single-head and group ablation (zero and mean) done, direct logit attribution done (layer 1 cancels layer 0's logit pattern in the first half), activation patching (denoising and noising) done; optional next steps: weight-level check of the layer-1 cancellation, several seeds.

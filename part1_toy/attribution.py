@@ -56,6 +56,26 @@ def cancellation(
     rms_independent = first.pow(2).mean(dim=(1, 2)).sum().sqrt().item()
     return rms_sum, rms_independent
 
+def cancellation_slope(
+    contrib: dict[str, torch.Tensor],
+    names_a: list[str],
+    names_b: list[str],
+    half_len: int,
+) -> tuple[float, float]:
+    """Correlation r and regression slope beta of set B on set A (first half).
+
+    Each set's contributions are summed over its components, then flattened to
+    one number per (sequence, position).
+
+    Returns:
+        Tuple (r, beta); beta = Cov(a, b) / Var(a).
+    """
+    a = sum(contrib[n][:, : half_len - 1] for n in names_a).flatten()
+    b = sum(contrib[n][:, : half_len - 1] for n in names_b).flatten()
+    cov = torch.cov(torch.stack([a, b]))
+    r = torch.corrcoef(torch.stack([a, b]))[0, 1].item()
+    beta = (cov[0, 1] / cov[0, 0]).item()
+    return r, beta
 
 def summarize(
     contrib: dict[str, torch.Tensor], half_len: int
@@ -110,3 +130,8 @@ if __name__ == "__main__":
                 f"  first-half RMS, {label:7s}: sum {rms_sum:7.3f} | "
                 f"uncorrelated {rms_indep:7.3f} | ratio {rms_sum / rms_indep:5.2f}"
             )
+        r, beta = cancellation_slope(contrib, groups["layer 0"], groups["layer 1"], half_len)
+        print(f"  layer 1 vs layer 0: r = {r:6.3f} | beta = {beta:6.3f}")
+        for head in groups["layer 1"]:
+            r_h, beta_h = cancellation_slope(contrib, groups["layer 0"], [head], half_len)
+            print(f"    {head}: r = {r_h:6.3f} | beta = {beta_h:6.3f}")

@@ -31,6 +31,7 @@ def train(
     batch_size: int = 64,
     lr: float = 1e-3,
     half_len_range: tuple[int, int] = (20, 20),
+    verbose: bool = True,
 ):
     """Train a Transformer on the induction task.
 
@@ -70,10 +71,11 @@ def train(
             history.append(
                 {"step": step, "half_len": half_len, "first_half": first, "second_half": second}
             )
-            print(
-                f"step {step:5d} | len {half_len:2d} | "
-                f"first half {first:.3f} | second half {second:.3f}"
-            )
+            if verbose:
+                print(
+                    f"step {step:5d} | len {half_len:2d} | "
+                    f"first half {first:.3f} | second half {second:.3f}"
+                )
 
     return model, history
 
