@@ -432,8 +432,44 @@ Fixed-length model (baseline: first 4.664, second 0.061)
 
 ![Single-head zero ablation, both models](figures/ablation_single_head.png)
 
-*Second-half loss after ablating each head (log scale). Solid line: baseline; dashed
-line: baseline + 1.0. This figure was drawn from the numbers in the tables above.*
+*Second-half loss after ablating each head, and the two groups (right of the dotted
+line), log scale. Solid line: baseline; dashed: baseline + 1.0; dash-dot: chance
+(ln 100 = 4.6). Drawn from the numbers in the tables, not from a script in the repo.*
+
+**Group ablation** (same sweep, two extra experiments: `L1 induction` = L1H0 + L1H2
++ L1H3, the three heads with the induction stripe, and `all L0` = all four layer-0
+heads). Outcomes planned before the run: near 4.6 = those heads are the whole copying
+mechanism; much lower = the circuit is larger; roughly the sum of the single rises
+(about 3.5) = no redundancy.
+
+| Model | Ablated | First-half loss | Second-half loss |
+|---|---|---|---|
+| Variable | baseline | 4.725 | 0.035 |
+| Variable | L1 induction (H0+H2+H3) | 9.994 | 7.943 |
+| Variable | all L0 | 4.890 | 4.799 |
+| Fixed | baseline | 4.664 | 0.061 |
+| Fixed | L1 induction (H0+H2+H3) | 48.917 | 19.334 |
+| Fixed | all L0 | 4.937 | 5.183 |
+
+- *`all L0` gives a clean result in both models.* Second-half loss goes to about
+  chance (4.8 and 5.2) and the first-half loss stays at its normal 4.9: the model
+  becomes uninformed but not broken. Without layer 0 the copying is gone, in the
+  variable model and in the fixed one. This supports the layer-level picture (layer 1
+  needs what layer 0 writes) without telling us what each layer-0 head contributes.
+- *`L1 induction` fell outside the planned outcomes.* The variable model's second-half
+  loss is 7.9, above chance, and the first-half loss rose from 4.7 to 10.0. Losing
+  information cannot push the loss above chance; this is the off-distribution damage
+  again (the fixed model: 48.9 and 19.3). So this number does not show that the three
+  heads are "the whole mechanism". It is also clearly more than the sum of the single
+  rises (about 3.5), which is the pattern redundancy predicts (each head's loss is
+  partly covered by the others), but we cannot separate that from the artifact.
+- *Single-head vs layer-wide in the fixed model.* Zeroing L0H2 alone gives 17.1, but
+  zeroing all of layer 0 gives only 5.2. Removing more made things better, which would
+  be impossible if the loss measured how much a head matters. A single zeroed head
+  leaves a partially wrong residual stream that layer 1 mishandles; removing the whole
+  layer leaves only the embeddings, which layer 1 can still read. This is the clearest
+  evidence in the project so far that zero ablation measures damage as well as
+  importance.
 
 **Reading the results.**
 - *Variable-length model.* Every layer-0 head and the three induction heads (L1H0,
@@ -455,10 +491,11 @@ line: baseline + 1.0. This figure was drawn from the numbers in the tables above
   hurts or does not hurt on this task". It does not show that a head implements a
   given function, or that the listed heads form the complete circuit.
 
-**Next.** Group ablation of the three induction heads together (the loss near 4.6 would
-mean they are the whole copying mechanism, much lower would mean the circuit is
-larger); mean ablation to test the off-distribution artifact; then direct logit
-attribution and activation patching.
+**Next.** Mean ablation (replace the head output with its average over data instead of
+zero) for the same single and group experiments: if the large first-half losses and
+the fixed model's L0H2 anomaly shrink, they were artifacts. Then direct logit
+attribution and activation patching, which measure contribution without the
+off-distribution problem.
 
 ---
 

@@ -60,6 +60,10 @@ if __name__ == "__main__":
             for layer in range(cfg.n_layers)
             for head in range(cfg.n_heads)
         ]
+        experiments += [
+            ("L1 induction", [(1, 0), (1, 2), (1, 3)]),
+            ("all L0", [(0, h) for h in range(cfg.n_heads)]),
+        ]
         for label, heads in experiments:
             set_seed(0)
             first, second = ablated_loss(model, heads, half_len, cfg.vocab_size)
