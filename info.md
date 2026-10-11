@@ -363,7 +363,7 @@ positional head's does not):
 The peak stays at 19 when the repeat length changes to 15, so the fixed model attends a
 fixed distance back, not the token after the earlier occurrence.
 
-## 1.7 Zero ablation of single heads
+## 1.7 Ablation: single heads, groups, zero and mean
 
 **Theory.** So far we only *read* the model. Reading shows what a head attends to, not
 whether the network depends on it. An *intervention* tests that: change a head's
@@ -461,15 +461,14 @@ mechanism; much lower = the circuit is larger; roughly the sum of the single ris
   information cannot push the loss above chance; this is the off-distribution damage
   again (the fixed model: 48.9 and 19.3). So this number does not show that the three
   heads are "the whole mechanism". It is also clearly more than the sum of the single
-  rises (about 3.5), which is the pattern redundancy predicts (each head's loss is
-  partly covered by the others), but we cannot separate that from the artifact.
+  rises (about 3.5), the pattern redundancy predicts. (Mean ablation later shows the
+  same 7.9, so it is not a zero-specific artifact; see below.)
 - *Single-head vs layer-wide in the fixed model.* Zeroing L0H2 alone gives 17.1, but
   zeroing all of layer 0 gives only 5.2. Removing more made things better, which would
   be impossible if the loss measured how much a head matters. A single zeroed head
   leaves a partially wrong residual stream that layer 1 mishandles; removing the whole
-  layer leaves only the embeddings, which layer 1 can still read. This is the clearest
-  evidence in the project so far that zero ablation measures damage as well as
-  importance.
+  layer leaves only the embeddings, which layer 1 can still read. Confirmed by mean
+  ablation: L0H2 alone drops from 17.1 to 0.31.
 
 **Reading the results.**
 - *Variable-length model.* Every layer-0 head and the three induction heads (L1H0,
@@ -479,23 +478,252 @@ mechanism; much lower = the circuit is larger; roughly the sum of the single ris
   attention: it is not part of the copying. The layer-0 result fits the circuit
   picture (induction needs a previous-token signal), but all four layer-0 heads
   contribute, not one or two clean previous-token heads.
-- *Fixed-length model.* Much more fragile: six of eight heads are large, some
-  catastrophic. Only L1H2 is negligible and L1H0 moderate, so the positional solution
-  is concentrated in few heads.
-- *Off-distribution caveat.* First-half losses far above 4.6 (up to 43) cannot be
-  "missing information": a model that has lost a feature should be at chance, not far
-  worse. They show that zeroing pushes the unnormalized network outside its training
-  range. The size of the fixed model's numbers, and the ranking among its large
-  effects, should not be over-interpreted.
+- *Fixed-length model (zero ablation).* Much more fragile: six of eight heads are
+  large, some catastrophic. Only L1H2 is negligible and L1H0 moderate. Mean ablation
+  below shows that this fragility was largely an artifact for layer 0.
+- *Off-distribution caveat (first reading, partly corrected below).* First-half losses
+  far above 4.6 (up to 43) cannot be "missing information": a model that has lost a
+  feature should be at chance, not far worse. I first attributed all of this to zeroing
+  pushing the unnormalized network outside its training range. Mean ablation shows
+  that is true for layer 0 but not for layer 1, where the large first-half losses
+  survive (see 1.7, mean ablation).
 - *What this does and does not show.* Zero ablation supports "removing this head
   hurts or does not hurt on this task". It does not show that a head implements a
   given function, or that the listed heads form the complete circuit.
 
-**Next.** Mean ablation (replace the head output with its average over data instead of
-zero) for the same single and group experiments: if the large first-half losses and
-the fixed model's L0H2 anomaly shrink, they were artifacts. Then direct logit
-attribution and activation patching, which measure contribution without the
-off-distribution problem.
+### Mean ablation
+
+**Theory.** Zero ablation writes a vector the network never saw. *Mean ablation*
+writes the head's average output over clean data instead, keeping the activation at its
+usual size while removing everything the head computes from the current input. It
+answers "what if this head ignored the input?" rather than "what if it wrote
+garbage?". Our version averages `hook_z` over sequences but keeps the position
+(shape `(head, pos, d_head)`), because position embeddings make a head's typical output
+depend on position; so each mean is tied to one repeat length (20). The means come
+from sequences generated with a different seed than the evaluation sequences.
+
+**What we did.** (`part1_toy/ablation.py`, `part1_toy/hooks.py`)
+- `mean_z(model, half_len, vocab_size)`: runs `run_with_cache` on 10 batches of 256
+  clean sequences and averages every `hook_z` over the batch.
+- `make_mean_ablation_hook(head, mean)`: like the zero hook, but writes `mean[head]`
+  (broadcast over the batch). A length mismatch raises a shape error on purpose.
+- `run_with_ablation(..., means=None)` chooses the hook; `means=None` keeps the old
+  zero behavior, so earlier results are unchanged (checked: the zero columns reproduce
+  the earlier tables exactly).
+- `ablated_loss(..., means=None)` passes it through; the sweep prints both modes per
+  row.
+
+**Hypotheses written before the run**, and outcomes:
+1. First-half losses stay near 4.7. **Partly wrong.** True for layer-0 heads; false for
+   layer 1 (fixed L1H1 29.8, L1H3 42.1; variable L1H1 8.0, group 10.0), almost
+   unchanged from zero ablation.
+2. The fixed model's L0H2 anomaly shrinks. **Confirmed**: 17.1 to 0.31.
+3. Variable model: L1H1 stays negligible (**confirmed**, 0.028) and the induction group
+   moves nearer chance (**refuted**: 7.89 vs 7.94 with zeros).
+
+**Results** (first-half / second-half loss; chance is 4.6):
+
+Fixed-length model (baseline 4.664 / 0.061)
+
+| Ablated | Zero | Mean | Second-half rise, mean | Verdict (mean) |
+|---|---|---|---|---|
+| L0H0 | 9.547 / 6.827 | 4.890 / 0.583 | 0.52 | moderate |
+| L0H1 | 5.945 / 9.029 | 5.125 / 0.878 | 0.82 | moderate |
+| L0H2 | 10.164 / 17.100 | 4.706 / 0.310 | 0.25 | moderate |
+| L0H3 | 7.957 / 3.633 | 6.509 / 1.451 | 1.39 | large |
+| L1H0 | 9.515 / 0.588 | 7.140 / 0.207 | 0.15 | moderate |
+| L1H1 | 30.349 / 5.612 | 29.774 / 5.023 | 4.96 | large |
+| L1H2 | 4.662 / 0.066 | 4.663 / 0.066 | 0.01 | negligible |
+| L1H3 | 42.999 / 14.298 | 42.058 / 12.316 | 12.26 | large |
+| L1 induction | 48.917 / 19.334 | 46.661 / 15.388 | 15.33 | large |
+| all L0 | 4.937 / 5.183 | 4.622 / 5.509 | 5.45 | large (chance) |
+
+Variable-length model (baseline 4.725 / 0.035)
+
+| Ablated | Zero | Mean | Second-half rise, mean | Verdict (mean) |
+|---|---|---|---|---|
+| L0H0 | 4.974 / 0.884 | 4.785 / 0.382 | 0.35 | moderate |
+| L0H1 | 5.377 / 1.710 | 5.266 / 1.476 | 1.44 | large |
+| L0H2 | 5.314 / 1.115 | 5.200 / 1.053 | 1.02 | large |
+| L0H3 | 5.142 / 0.908 | 5.106 / 0.933 | 0.90 | moderate |
+| L1H0 | 6.796 / 1.589 | 6.716 / 1.587 | 1.55 | large |
+| L1H1 | 8.006 / 0.030 | 7.991 / 0.028 | -0.01 | negligible |
+| L1H2 | 6.417 / 1.166 | 6.392 / 1.166 | 1.13 | large |
+| L1H3 | 6.155 / 0.887 | 6.142 / 0.892 | 0.86 | moderate |
+| L1 induction | 9.994 / 7.943 | 9.954 / 7.888 | 7.85 | large |
+| all L0 | 4.890 / 4.799 | 5.021 / 4.770 | 4.74 | large (chance) |
+
+![Zero vs mean ablation](figures/ablation_zero_vs_mean.png)
+
+*Zero (red) vs mean (blue) ablation, top: second half, bottom: first half, log scale.
+Drawn from the tables, not from a script in the repo.*
+
+**What we learned.**
+- *Layer-0 damage in the fixed model was mostly an artifact.* Mean ablation shrinks
+  L0H0/H1/H2 from 6.8/9.0/17.1 to 0.6/0.9/0.3, and their first-half losses return to
+  about 4.7 to 5.1. With the artifact gone, the fixed model's critical heads are L1H3
+  (12.3) and L1H1 (5.0); L1H2 is irrelevant and the rest are moderate. This replaces
+  the "six of eight heads" reading: the positional solution is concentrated in a few
+  layer-1 heads, plus partial contributions from layer 0.
+- *In the variable model, zero and mean agree for layer 1* (e.g. L1H2 1.166 vs 1.166).
+  A plausible reason (not checked): these heads write content-dependent vectors that
+  average to about zero over random tokens, so the mean is almost the zero vector;
+  layer-0 heads carry a large constant (position-dependent) component, which is why
+  zeroing hurt them more. Check: compare the norm of each mean with the typical norm
+  of the activation.
+- *Layer-1 first-half blow-ups are not a zeroing artifact.* They survive mean ablation
+  unchanged, so these heads do something real in the first half, where there is nothing
+  to copy. The variable model's L1H1 is the sharpest case: removing it leaves the
+  copying intact (second half 0.028) but raises the first-half loss from 4.7 to 8.0.
+  So it is not an induction head but it is not idle either. Hypothesis (untested): it
+  calibrates the output, for example suppressing the current token's own logit, a role
+  that would also explain why removing the three induction heads leaves L1H1 acting
+  without the heads it balances (group second-half loss 7.9, above chance). Direct logit
+  attribution tests this by reading each head's contribution to the logits directly. (Tested in 1.8: the cancellation turned out to be between the layers, not specific to L1H1.)
+- *Layer 0 as a whole is necessary under both methods*: `all L0` ends at chance (4.8 and
+  5.5) with a normal first half.
+- *Limits.* Mean ablation is also an intervention that can be off-distribution (a head
+  at its average while others are not); it is a better baseline than zero, not a perfect
+  one. The group result (7.9, above chance) means we still cannot call the three
+  induction heads "the whole mechanism".
+
+**Next.** Direct logit attribution (section 1.8), to read what each head writes toward
+the output without removing anything; then activation patching.
+
+
+## 1.8 Direct logit attribution (DLA)
+
+**Theory.** Ablation intervenes; DLA only reads. Because the logits are linear in the
+final residual stream, and the stream is a sum of what each component wrote, the logits
+split exactly into one term per component:
+
+$$
+x_{\text{final}} = x_{\text{embed}} + x_{\text{pos}} + \sum_{l,h} x^{(l,h)}, \qquad
+x^{(l,h)} = z^{(l,h)} W_O^{(l,h)}, \qquad \text{logits} = x_{\text{final}} W_U .
+$$
+
+This is exact only because the model has no layernorm, MLP or biases (in GPT-2,
+layernorm breaks it and needs a workaround). Softmax ignores a constant added to all
+logits, so we measure the correct token $t$ relative to the vocabulary average:
+
+$$
+\tilde{\ell}_t = \ell_t - \frac{1}{|V|}\sum_{v\in V}\ell_v, \qquad
+\text{DLA}_c(t) = x^{c}\Big(W_U[:,t] - \frac{1}{|V|}\sum_{v} W_U[:,v]\Big), \qquad
+\sum_c \text{DLA}_c(t) = \tilde{\ell}_t .
+$$
+
+What DLA does not measure: indirect effects. A layer-0 head that helps by feeding a
+layer-1 head has a small direct effect; ablation sees it, DLA does not. For layer-1
+heads, however, nothing comes after them, so DLA is their whole effect (ablating one
+subtracts exactly its contribution vector). Averaging $\tilde{\ell}_t$ over uniformly
+random targets gives 0 for every component, so in the unpredictable first half the mean
+is uninformative; we report the root mean square
+$\text{RMS}_c = \sqrt{\tfrac1N\sum \text{DLA}_c^2}$ instead, which shows how large
+a pattern the component writes.
+
+**What we did** (`part1_toy/attribution.py`).
+- `decompose(model, tokens)`: splits the residual stream into `embed`, `pos_embed` and
+  the 8 heads, each `(batch, pos, d_model)`. Heads use `hook_z` and `W_O` with the head
+  dimension kept.
+- `logit_attribution(model, tokens)`: dots each component with the target's column of
+  `W_U` minus the vocab-average column.
+- `summarize(...)`: first-half mean, second-half mean and first-half RMS per component.
+- Exactness checks: the components sum to the final logits within $4\times10^{-6}$, and
+  the attributions sum to the actual centered correct-token logit within
+  $6\times10^{-6}$.
+- Bug found on the way: `PosEmbed` returns `(pos, d_model)` without a batch dimension
+  (the model relies on broadcasting), so `decompose` needs `.expand(batch, -1, -1)`.
+  The first check passed anyway because summing broadcasts.
+
+**Predictions written before the run:** (1) variable model: L1H0, L1H2, L1H3 carry the
+positive contribution, L1H1 near 0, layer 0 and embeddings small; (2) fixed model: L1H3
+and L1H1 dominate, L1H2 near 0; (3) first-half RMS is large for the layer-1 heads whose
+ablation blew up the first half. All three held.
+
+**Results** (256 sequences, repeat length 20; centered logit units).
+
+| Component | Fixed: 2nd-half mean | Fixed: 1st-half RMS | Variable: 2nd-half mean | Variable: 1st-half RMS |
+|---|---|---|---|---|
+| embed | 0.022 | 1.020 | 0.032 | 0.407 |
+| pos_embed | -0.006 | 0.398 | 0.001 | 0.203 |
+| L0H0 | -1.332 | 11.829 | 0.014 | 0.683 |
+| L0H1 | -1.476 | 12.989 | 0.031 | 0.675 |
+| L0H2 | -1.151 | 10.125 | 0.020 | 0.634 |
+| L0H3 | -0.584 | 8.964 | 0.025 | 0.690 |
+| L1H0 | 2.856 | 4.679 | 5.100 | 1.861 |
+| L1H1 | 19.086 | 14.829 | -0.217 | 2.026 |
+| L1H2 | 0.014 | 0.054 | 4.469 | 1.693 |
+| L1H3 | 34.097 | 21.018 | 3.758 | 1.561 |
+| **total** | **51.526** | | **13.232** | |
+
+![DLA per component](figures/dla_components.png)
+
+*Top: mean contribution to the correct token in the second half. Bottom: first-half
+RMS. Drawn from the table, not from a script in the repo.*
+
+**What we learned.**
+- *Variable model.* The three induction heads produce essentially all of the correct
+  token's logit (5.10 + 4.47 + 3.76 of a total 13.23); layer 0, embed and pos_embed
+  contribute about 0 directly (their role is indirect). Each head supplies a large
+  share, so removing one leaves a large margin, which is why single-head ablation gave
+  moderate losses (about 1) while removing all three gave chance or worse.
+- *L1H1 (variable).* Contributes $-0.22$ to the correct token, so removing it should
+  slightly help, and it did (second-half loss 0.030 vs baseline 0.035). Its first-half
+  RMS (2.03) is the largest of all heads, and the RMS ranking of the layer-1 heads
+  (L1H1 2.03 > L1H0 1.86 > L1H2 1.69 > L1H3 1.56) matches the ranking of first-half
+  loss after ablating each (8.0 > 6.8 > 6.4 > 6.2).
+- *Fixed model.* L1H3 (+34.1) and L1H1 (+19.1) dominate, L1H2 contributes 0, in
+  agreement with ablation. Its logits are far larger than the variable model's (total
+  51.5 vs 13.2), and layer 0 writes large patterns *directly* (first-half RMS 9 to 13,
+  against about 0.65 in the variable model) while the first-half loss stays normal. So
+  large terms must nearly cancel in the total, which is a likely reason the fixed model
+  is fragile: removing one term leaves the others uncancelled.
+- *Cancellation test* (`cancellation` in `attribution.py`). For a set $S$ of
+  components, compare the first-half RMS of the summed contribution with the RMS if they
+  were uncorrelated:
+
+  $$
+  \rho = \frac{\text{RMS}_{\text{sum}}}{\sqrt{\sum_{c\in S}\text{RMS}_c^2}}
+  $$
+
+  $\rho\approx1$: uncorrelated; $\rho<1$: partial cancellation; $\rho>1$: the
+  components reinforce each other. In the first half the targets are random, so
+  $\text{RMS}_c$ is, in expectation, the spread of the component's centered logit
+  vector over the vocabulary, and cancellation here is cancellation of whole logit
+  vectors.
+
+  | Model | Set | RMS of sum | RMS if uncorrelated | $\rho$ |
+  |---|---|---|---|---|
+  | Fixed | layer 0 | 37.714 | 22.170 | 1.70 |
+  | Fixed | layer 1 | 38.374 | 26.145 | 1.47 |
+  | Fixed | all components | 0.333 | 34.297 | 0.01 |
+  | Variable | layer 0 | 1.674 | 1.341 | 1.25 |
+  | Variable | layer 1 | 1.962 | 3.587 | 0.55 |
+  | Variable | all components | 0.402 | 3.857 | 0.10 |
+
+- *Reading it.* Written beforehand: (1) variable layer 1 below 0.5 (got 0.55, a near
+  miss: partial cancellation among the layer-1 heads); (2) fixed all components far
+  below 1 (0.01, confirmed); (3) fixed layer 0 on its own near 1 (got 1.70, the heads
+  reinforce each other). The dominant effect is something else: within each layer the
+  heads add up (or only partly cancel), but the two layers cancel *each other*. In the
+  fixed model layer 0 writes a pattern of RMS 37.7 and layer 1 writes one of RMS 38.4,
+  and the total is 0.33; in the variable model 1.67 and 1.96 give 0.40. So in the first
+  half layer 1 writes roughly the negative of what layer 0 writes into the logits.
+- *Interpretation (hypothesis, untested).* Whatever layer 0 writes into the shared
+  residual stream so that layer 1 can read it is also read by $W_U$, and with no
+  layernorm nothing hides it from the logits. A side effect of this kind has to be
+  cancelled to keep the output calibrated, and layer 1 learns to do it. This would
+  explain why ablating a layer-1 head produces huge first-half losses (the layer-0
+  pattern is left uncancelled), why zeroing a single layer-0 head was damaging while
+  removing the whole of layer 0 was clean (layer 1 then reads no layer-0 output to
+  cancel), and why the fixed model, whose layer 0 leaks far more (RMS 38 vs 1.7), is
+  so fragile. It also corrects my earlier guess in 1.7 that L1H1 alone acts as a
+  calibration head: the cancellation is a property of the layers, with L1H1 one
+  contributor (the largest first-half RMS of the four).
+
+**Next.** Check the "equal and opposite" claim directly: the correlation between the
+layer-0 sum and the layer-1 sum (expected close to $-1$) and between the layer-0 sum
+and each layer-1 head, to see which heads do the cancelling. Then activation patching.
 
 ---
 

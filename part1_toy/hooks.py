@@ -56,32 +56,30 @@ def make_zero_ablation_hook(head: int):
 
     return hook
 
-def run_with_ablation(
-    model: Transformer, tokens: torch.Tensor, heads: list[tuple[int, int]]
-) -> torch.Tensor:
-    """Run the model with the given heads switched off.
+def make_mean_ablation_hook(head: int, mean: torch.Tensor):
+    def hook(module, inputs, output):
+        output = output.clone()
+        output[:, head] = mean[head]
+        return output
+    return hook
 
-    Args:
-        model: The Transformer to run.
-        tokens: Integer tensor of shape (batch, pos).
-        heads: List of (layer, head) pairs to zero out. An empty list means
-            no ablation (the normal model).
 
-    Returns:
-        The logits, shape (batch, pos, vocab_size).
-    """
+#choose between two ablation hooks and run the model with the ablation applied
+def run_with_ablation(model, tokens, heads, means=None):
     handles = []
     for layer, head in heads:
         module = model.layers[layer].hook_z
-        handles.append(module.register_forward_hook(make_zero_ablation_hook(head)))
-
+        if means is None:
+            hook = make_zero_ablation_hook(head)
+        else:
+            hook = make_mean_ablation_hook(head, means[f"layers.{layer}.hook_z"])
+        handles.append(module.register_forward_hook(hook))
     try:
         with torch.no_grad():
             logits = model(tokens)
     finally:
         for handle in handles:
             handle.remove()
-
     return logits
 
 

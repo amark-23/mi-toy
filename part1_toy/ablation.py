@@ -3,10 +3,31 @@
 import torch
 
 from data import make_batch
-from hooks import run_with_ablation
+from hooks import run_with_ablation, run_with_cache
 from model import Transformer
 from train import per_position_loss
 
+def mean_z(
+    model: Transformer,
+    half_len: int,
+    vocab_size: int,
+    n_batches: int = 10,
+    batch_size: int = 256,
+) -> dict[str, torch.Tensor]:
+    """Mean per-head output (hook_z) over clean data, averaged over the batch.
+
+    Returns:
+        Dict from hook name (e.g. 'layers.0.hook_z') to a tensor of shape
+        (head, pos, d_head).
+    """
+    totals = {}
+    for _ in range(n_batches):
+        tokens = make_batch(batch_size, half_len, vocab_size)
+        _, cache = run_with_cache(model, tokens)
+        for name, act in cache.items():
+            if name.endswith("hook_z"):
+                totals[name] = totals.get(name, 0) + act.mean(dim=0)
+    return {name: total / n_batches for name, total in totals.items()}
 
 def ablated_loss(
     model: Transformer,
@@ -15,6 +36,7 @@ def ablated_loss(
     vocab_size: int,
     n_batches: int = 10,
     batch_size: int = 256,
+    means: dict | None = None,
 ) -> tuple[float, float]:
     """Mean first-half and second-half loss with the given heads switched off.
 
@@ -25,6 +47,7 @@ def ablated_loss(
         vocab_size: Number of distinct tokens.
         n_batches: Number of batches to average over.
         batch_size: Sequences per batch.
+        means: Output of mean_z for mean ablation; None means zero ablation.
 
     Returns:
         Tuple (first_half_loss, second_half_loss).
@@ -32,7 +55,7 @@ def ablated_loss(
     first, second = [], []
     for _ in range(n_batches):
         tokens = make_batch(batch_size, half_len, vocab_size)
-        logits = run_with_ablation(model, tokens, heads)
+        logits = run_with_ablation(model, tokens, heads, means)
         losses = per_position_loss(logits, tokens)
         first.append(losses[:, : half_len - 1].mean().item())
         second.append(losses[:, half_len:].mean().item())
@@ -64,7 +87,14 @@ if __name__ == "__main__":
             ("L1 induction", [(1, 0), (1, 2), (1, 3)]),
             ("all L0", [(0, h) for h in range(cfg.n_heads)]),
         ]
+        set_seed(1)
+        means = mean_z(model, half_len, cfg.vocab_size)
         for label, heads in experiments:
-            set_seed(0)
-            first, second = ablated_loss(model, heads, half_len, cfg.vocab_size)
-            print(f"  ablate {label:8s} | first half {first:.3f} | second half {second:.3f}")
+            row = []
+            for m in (None, means):
+                set_seed(0)
+                first, second = ablated_loss(
+                    model, heads, half_len, cfg.vocab_size, means=m
+                )
+                row.append(f"{first:6.3f} / {second:6.3f}")
+            print(f"  ablate {label:12s} | zero {row[0]} | mean {row[1]}")
