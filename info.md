@@ -962,7 +962,191 @@ repeat length 15.
 - Surprises to watch for: a `fixed` seed with a different positional offset scheme, or
   a seed that fails to learn.
 
-_Results pending._
+### Training and generalization (step 1 and 2)
+
+**What we did.** `part1_toy/train_seeds.py` trained 5 seeds of each kind (15,000 steps
+each, about 2 to 4 minutes per model on CPU; restartable); `train()` got a `verbose`
+switch for it. `part1_toy/seeds_eval.py` evaluates each model on 2,560 fresh sequences per
+repeat length.
+
+Second-half loss by repeat length:
+
+| Kind | Seed | len 5 | len 10 | len 15 | len 20 |
+|---|---|---|---|---|---|
+| fixed | 0 | 4.660 | 4.646 | 53.050 | 0.023 |
+| fixed | 1 | 4.631 | 4.625 | 25.365 | 0.007 |
+| fixed | 2 | 4.653 | 4.628 | 24.644 | 0.007 |
+| fixed | 3 | 4.656 | 4.641 | 34.222 | 0.011 |
+| fixed | 4 | 4.638 | 4.626 | 17.603 | 0.003 |
+| varlen | 0 | 0.139 | 0.057 | 0.025 | 0.035 |
+| varlen | 1 | 1.031 | 0.071 | 0.028 | 0.049 |
+| varlen | 2 | 0.078 | 0.074 | 0.026 | 0.051 |
+| varlen | 3 | 0.119 | 0.057 | 0.038 | 0.045 |
+| varlen | 4 | 0.062 | 0.037 | 0.021 | 0.032 |
+
+![Generalization across repeat lengths](figures/seeds_generalization.png)
+
+*Drawn from the table, not from a script in the repo.*
+
+**Outcomes against the predictions.**
+- *H1 (all ten learn their task):* holds at length 20 (fixed 0.003 to 0.023, varlen 0.032
+  to 0.051). Caveat: at the shortest length the varlen models differ: length 5 gives
+  1.031 for seed 1, and 0.139 and 0.119 for seeds 0 and 3, so only 2 of 5 are below 0.1
+  there. Length 5 is only 1/16 of the training batches; the seeds differ in how robust their
+  circuit is at the edge of the range.
+- *H2 (mechanism follows the training distribution):* holds. All five `fixed` models fail
+  at length 15 (17.6 to 53.1); all five `varlen` models generalize across lengths 10, 15
+  and 20 (0.02 to 0.07). Detail I predicted wrongly: I expected `fixed` losses above 5 at
+  lengths 5 and 10 as well, but they are at chance (4.63 to 4.66). A head that reads a fixed
+  distance back (about 19) has nothing to read for queries below position 19, which is all
+  of length 5 (queries 5 to 8) and length 10 (queries 10 to 18), so the model is merely
+  uninformed; at length 15 the queries at positions 19 to 28 have a position 19 back that
+  holds the wrong token, hence confident errors. This pattern is the same in all five seeds
+  (consistent with a fixed-distance rule in each; the offset profile will say which). The
+  spread of the length-15 loss (17.6 to 53.1) is probably logit scale rather than mechanism.
+- No `fixed` seed generalized and none failed to learn at length 20.
+
+**Reproducibility check (unexpected, now explained).** The new `varlen` seed 0 (15,000
+steps, same recipe and seed as the earlier `part1_toy/varlen_seed0.pt`) is not
+tensor-for-tensor equal to the old checkpoint. The maximum absolute difference per
+tensor is small: $10^{-4}$ to $3\times10^{-3}$ (embeddings 1.5e-3, positions 3.2e-3,
+layer-1 $W_V$ and $W_O$ about 1e-4), against an initialization scale of 0.02. A
+different recipe would give differences of that order everywhere, and one round of float
+error is about $10^{-7}$, so the likely cause is floating-point nondeterminism (summation
+order in multithreaded CPU operations) amplified over 15,000 steps of training. The
+behavior matches (second-half loss at length 20: 0.035 for both), so for our purposes
+the models are the same function and sections 1.5 to 1.9 stand; the offset profile of the
+new seed 0 is checked against section 1.6 below. A point for later: the same seed does not
+reproduce bit-for-bit even on one machine, so run-to-run variance is not zero before any
+seed changes.
+
+### Fingerprint 1: where the layer-1 heads look (`part1_toy/fingerprint.py`)
+
+Head indices are arbitrary labels across seeds, so each head is described by where its
+attention peaks (distance back, second-half queries, 256 sequences) at two repeat lengths,
+and heads are listed from strongest to weakest at length 20. For an induction head the
+peak moves with the length ($L-1$: 19 at length 20, 9 at length 10); a positional head keeps
+the same offset.
+
+*Measurement artifact found and fixed.* `offset_profile` averages the weight at distance
+$d$ only over queries that have a position $d$ back, so at large offsets very few queries
+count (offset 18 at length 10 rests on a single query: "1.00" meant one query attending to
+position 0). Offsets are now restricted to those covered by at least half of the
+$L-1$ second-half queries, $d\le\lfloor(3L-1)/2\rfloor$ (29, 22, 14 for $L=$ 20, 15,
+10).
+
+`varlen`, peak offset (weight) at length 20 > length 10:
+
+| Seed | Head 1 | Head 2 | Head 3 | Head 4 |
+|---|---|---|---|---|
+| 0 | 19 (0.91) > 9 (0.85) | 19 (0.83) > 9 (0.78) | 19 (0.80) > 9 (0.72) | 0 (0.17) > 0 (0.83) |
+| 1 | 19 (0.92) > 9 (0.90) | 19 (0.86) > 9 (0.84) | 0 (0.49) > 0 (0.39) | 19 (0.18) > 14 (0.19) |
+| 2 | 19 (0.81) > 9 (0.78) | 19 (0.74) > 9 (0.74) | 19 (0.66) > 9 (0.64) | 0 (0.46) > 0 (0.82) |
+| 3 | 19 (0.93) > 9 (0.88) | 19 (0.72) > 9 (0.70) | 19 (0.38) > 0 (0.43) | 19 (0.30) > 0 (0.50) |
+| 4 | 19 (0.95) > 9 (0.93) | 19 (0.95) > 9 (0.92) | 19 (0.76) > 9 (0.21) | 0 (0.26) > 0 (0.77) |
+
+`fixed`, peak offset (weight) at length 20 > length 15:
+
+| Seed | Head 1 | Head 2 | Head 3 | Head 4 |
+|---|---|---|---|---|
+| 0 | 19 (0.42) > 19 (0.80) | 19 (0.32) > 19 (0.60) | 19 (0.24) > 19 (0.44) | 19 (0.08) > 19 (0.13) |
+| 1 | 19 (0.73) > 19 (0.99) | 19 (0.73) > 19 (0.99) | 19 (0.73) > 19 (0.98) | 20 (0.40) > 20 (0.51) |
+| 2 | 19 (1.00) > 19 (1.00) | 19 (1.00) > 19 (0.99) | 19 (0.99) > 19 (0.99) | 20 (0.87) > 20 (0.86) |
+| 3 | 19 (0.84) > 19 (0.70) | 19 (0.84) > 19 (0.70) | 19 (0.83) > 19 (0.67) | 19 (0.60) > 19 (0.48) |
+| 4 | 19 (0.95) > 19 (0.90) | 19 (0.24) > 19 (0.31) | 19 (0.22) > 19 (0.24) | 19 (0.17) > 19 (0.19) |
+
+**Predictions written before the run, and outcomes.**
+- *Seed 0 of `varlen` reproduces section 1.6* (0.91/0.83/0.80 at 19, 0.85/0.78/0.72 at 9,
+  self head 0.17 and 0.83): yes, to two decimals. The old and new seed-0 models are the same
+  circuit (the weights differ by about 1e-3, see above).
+- *H2 (every `varlen` seed has at least two induction heads, peak 19 > 9 with weight at
+  least 0.5 at both lengths):* holds (3, 2, 3, 2, 2 clean induction heads for seeds 0 to 4).
+- *H3 (three induction heads in a majority of seeds, range 2 to 4):* refuted as stated.
+  Three in seeds 0 and 2 only; two in seeds 1, 3 and 4. The range was right, the majority
+  was not.
+- *The remaining heads attend mostly to themselves:* true in seeds 0 and 2; in seed 1 one is
+  self-attending and one diffuse; in seed 3 both are partial (induction-like at length 20,
+  self at length 10); in seed 4 one is self-attending and one induction-like at length 20
+  only (0.76 vs 0.21).
+- *`fixed`: same offset at both lengths and it is 19, in every seed:* holds for the dominant
+  heads in all five seeds. Seeds 1 and 2 also have a head at offset 20, stable across
+  lengths, a second positional role that the seed-0 model lacks (role unknown).
+  Sharpness differs a lot: seed 2 has three heads at 0.99 to 1.00, seed 0 spreads the job
+  over four heads at 0.08 to 0.42, seed 4 has one head at 0.95 and three weak ones.
+
+**Reading.** Every `varlen` seed has a working induction circuit and every `fixed` seed an
+offset-19 rule, so the mechanism type follows the training distribution. Within a type the
+details vary with the seed: the number of full induction heads (2 or 3), their sharpness,
+the role of the remaining heads (self, diffuse, length-specific partial induction) and, for
+`fixed`, how many heads share the rule and whether an offset-20 head exists. Whether the
+partial heads contribute to the output is not visible from attention alone (next:
+logit-attribution fingerprints).
+
+### Fingerprint 2: what the heads write (`logit_fingerprint`)
+
+Per model (256 sequences, repeat length 20): total second-half centered logit of the
+correct token; layer-0 RMS (first-half, the four heads added in quadrature,
+$\sqrt{\sum\text{RMS}^2}$); the slope $\beta$ of the layer-1 sum on the layer-0 sum
+(first half); and the four layer-1 heads as second-half DLA / first-half RMS, sorted by DLA
+(indices are arbitrary).
+
+| Kind | Seed | Total | Layer-0 RMS | $\beta$ | Layer-1 heads (DLA / RMS), strongest first |
+|---|---|---|---|---|---|
+| varlen | 0 | 13.24 | 1.34 | -1.118 | 5.10 / 1.86, 4.47 / 1.69, 3.76 / 1.56, -0.22 / 2.03 |
+| varlen | 1 | 13.87 | 0.31 | -0.331 | 7.81 / 2.68, 6.05 / 2.18, 0.30 / 0.45, -0.35 / 4.88 |
+| varlen | 2 | 12.89 | 1.49 | -1.147 | 5.35 / 2.13, 4.25 / 1.83, 3.28 / 1.60, -0.13 / 1.85 |
+| varlen | 3 | 13.08 | 1.84 | -1.092 | 8.51 / 3.00, 2.78 / 1.31, 0.94 / 1.18, 0.79 / 1.34 |
+| varlen | 4 | 15.45 | 0.80 | -1.195 | 7.43 / 2.24, 6.93 / 2.20, 1.04 / 0.44, 0.00 / 3.00 |
+| fixed | 0 | 43.55 | 19.57 | -1.017 | 28.89 / 18.31, 17.73 / 14.57, 1.00 / 2.10, 0.02 / 0.06 |
+| fixed | 1 | 27.62 | 3.89 | -1.014 | 18.11 / 8.31, 7.32 / 3.63, 2.96 / 1.75, -0.53 / 7.51 |
+| fixed | 2 | 30.44 | 5.73 | -1.062 | 16.74 / 9.99, 13.85 / 8.54, 0.36 / 8.85, 0.02 / 0.04 |
+| fixed | 3 | 35.92 | 14.36 | -1.037 | 31.82 / 18.89, 4.59 / 3.03, 0.42 / 0.42, 0.18 / 0.38 |
+| fixed | 4 | 20.61 | 4.92 | -1.062 | 21.05 / 8.03, -0.00 / 0.02, -0.00 / 0.03, -0.01 / 0.03 |
+
+![Division of labor among the layer-1 heads](figures/seeds_division_of_labor.png)
+
+*Stacked second-half DLA per seed, heads ranked by DLA. Drawn from the table, not from a
+script in the repo.*
+
+**Predictions written before the run, and outcomes.**
+1. *`varlen` seed 0 matches section 1.8* (total 13.2, layer-0 RMS 1.34, $\beta=-1.118$,
+   heads 5.10, 4.47, 3.76, -0.22): yes (13.24 and the rest exactly).
+2. *H4 (a): layer-0 RMS of every `fixed` seed at least 5 times the largest `varlen` value
+   (1.84, so at least 9.2):* refuted. Only seeds 0 and 3 (19.57, 14.36) pass; seeds 1, 2
+   and 4 give 3.89, 5.73, 4.92. The groups do separate (smallest `fixed` 3.89, 2.1 times
+   the largest `varlen`).
+3. *H4 (b): $\beta\in[-1.2,-0.8]$ for all ten models:* holds for nine. All `fixed` seeds
+   give -1.01 to -1.06; four `varlen` seeds give -1.09 to -1.20; `varlen` seed 1 gives
+   -0.331.
+4. *H3 (trim head in at least 3 of 5 `varlen` seeds; rule: second-half DLA below 10% of the
+   total and first-half RMS at least half the largest layer-1 RMS):* holds, in seeds 0,
+   1, 2, 4. Seed 3 has none (its weak heads have RMS 1.18 and 1.34, below half of 3.00).
+5. *The partial heads (seeds 3 and 4) show intermediate DLA:* roughly: 0.94, 0.79 and 1.04,
+   about 6 to 8% of the total, small but not nothing.
+
+**What we learned.**
+- *Stable.* Mechanism type follows the training distribution; the total logit in `varlen`
+  is nearly constant (12.9 to 15.5) while in `fixed` it varies by more than 2 (20.6 to
+  43.6); layer 1 undoes layer 0's first-half logit pattern in 9 of 10 models, in `fixed`
+  within 1 to 6% of exact cancellation; a trim head exists in 4 of 5 `varlen` seeds.
+- *Seed-dependent.* The division of labor: in `varlen` three heads carry the output
+  (seeds 0 and 2, roughly 39%, 34% and 28%), two (seeds 1 and 4), or one dominant head
+  (seed 3: 8.5, then 2.8, then two weak heads); in `fixed` from one head doing all of it
+  (seed 4: 21.05 of 20.61) to three (seed 1). Layer 0's leakage ranges from 0.31 to 1.84
+  in `varlen` and 3.9 to 19.6 in `fixed`.
+- *Exception to "layer 1 undoes layer 0".* `varlen` seed 1: layer 0 writes only 0.31, and
+  its trim head (DLA -0.35, RMS 4.88, the largest first-half RMS of any `varlen` head)
+  cancels the induction heads (RMS 2.68 and 2.18) within layer 1 instead, so $\beta$
+  is -0.33. Cancellation exists in two forms: layer 1 against layer 0, and the trim head
+  against the induction heads.
+- *Two hypotheses to test (not yet tested).* (a) In `fixed` seeds 1 and 2 a layer-1 head has
+  near-zero DLA and a large first-half RMS (7.51 and 8.85), and those are exactly the
+  two seeds with a head attending at offset 20: the offset-20 heads may be trim heads.
+  (b) In `varlen` seed 3 the two weak heads may be the ones with partial induction attention.
+  Both can be checked by printing attention and DLA for the same head in one line.
+
+_Results pending: the per-head role table (attention and DLA of the same head), and a
+summary of the seed study._
 
 ---
 

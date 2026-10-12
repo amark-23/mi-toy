@@ -42,6 +42,7 @@ def train(
         batch_size: Sequences per step.
         lr: Learning rate.
         half_len_range: Smallest and largest repeat length; one length is sampled uniformly per step. (20, 20) means a fixed length.
+        verbose : Whether to print progress every 100 steps.
 
     Returns:
         The trained model and a list with the logged losses.
