@@ -41,7 +41,7 @@ mi-toy/
 - [x] Write activations through hooks: zero ablation and mean ablation of single heads and groups
 - [x] Direct logit attribution (residual stream decomposition)
 - [x] Activation patching (clean vs corrupted prompt)
-- [ ] Optional: repeat training with 3-5 seeds and compare which heads matter
+- [x] Repeat training with 5 seeds per training distribution and compare circuits (mechanism type is stable; division of labor varies with the seed)
 
 ### Part 2: GPT-2 small + IOI
 - [ ] Set up the library, load the model
@@ -125,4 +125,4 @@ python part1_toy/test.py      # sanity checks: shapes, parameter count, initial 
 
 ## Status
 
-Part 1: toy models trained and verified (induction heads in the variable-length model, positional shortcut in the fixed-length one); single-head and group ablation (zero and mean) done, direct logit attribution done (layer 1 cancels layer 0's logit pattern in the first half), activation patching (denoising and noising) done; optional next steps: weight-level check of the layer-1 cancellation, several seeds.
+Part 1: toy models trained and verified (induction heads in the variable-length model, positional shortcut in the fixed-length one); single-head and group ablation (zero and mean) done, direct logit attribution done (layer 1 cancels layer 0's logit pattern in the first half), activation patching (denoising and noising) done; five-seed study per training distribution done (mechanism follows the training distribution, circuit details vary with the seed); optional next steps: weight-level check of the layer-1 cancellation, then Part 2.

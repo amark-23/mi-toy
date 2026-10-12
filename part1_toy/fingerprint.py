@@ -46,6 +46,25 @@ def logit_fingerprint(model: Transformer, cfg: Config, half_len: int = 20, n_seq
     return {"heads": heads, "total": total, "layer0_rms": layer0_rms, "beta": beta}
 
 
+def head_roles(
+    model: Transformer, cfg: Config, half_len: int = 20, n_seq: int = 256
+) -> list[tuple[float, float, int, float]]:
+    """Attention peak and logit contribution of the same layer-1 head, side by side.
+
+    Returns:
+        List of (second-half DLA, first-half RMS, peak_offset, peak_weight), one per
+        layer-1 head, sorted by DLA, strongest first.
+    """
+    peaks = layer1_peaks(model, cfg, half_len, n_seq)
+    tokens = make_batch(n_seq, half_len, cfg.vocab_size)
+    rows = summarize(logit_attribution(model, tokens), half_len)
+    roles = []
+    for head, offset, weight in peaks:
+        _, dla, rms = rows[f"L1H{head}"]
+        roles.append((dla, rms, offset, weight))
+    return sorted(roles, reverse=True)
+
+
 if __name__ == "__main__":
     from evaluate import load_model
     from utils import set_seed
@@ -77,3 +96,12 @@ if __name__ == "__main__":
                 f"  seed {seed} | {fp['total']:6.2f} | {fp['layer0_rms']:6.2f} | "
                 f"{fp['beta']:6.3f} | {heads}"
             )
+
+    print("\nroles: layer-1 heads as DLA/RMS@offset(weight), strongest DLA first")
+    for kind in plans:
+        print(f"{kind}:")
+        for seed in range(5):
+            model = load_model(f"part1_toy/checkpoints/{kind}_seed{seed}.pt", cfg)
+            set_seed(0)
+            cells = [f"{d:6.2f}/{r:5.2f}@{o:2d}({w:.2f})" for d, r, o, w in head_roles(model, cfg)]
+            print(f"  seed {seed} | " + "  ".join(cells))
