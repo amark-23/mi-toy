@@ -1259,7 +1259,115 @@ layer-0 key side, and the weight-level check of the layer-1 cancellation.
 
 # Part 2: GPT-2 small and IOI
 
-_Not started._
+## 2.1 Setup: library, model, hooks, baseline
+
+**Task.** Indirect object identification (IOI): in "When Mary and John went to the store,
+John gave a drink to" the model should predict " Mary" (the indirect object, IO) and not
+" John" (the repeated subject, S). The metric is the logit difference
+$\mathrm{LD}=\text{logit}(\text{IO})-\text{logit}(\text{S})$, the same idea as the centered
+true-token logit of Part 1 but against the specific tempting wrong answer.
+
+**Environment (checked, not assumed).** Python 3.13.5, torch 2.14.1 (CPU build, no GPU
+visible: `torch.cuda.is_available()` is False). A GPU is not needed: GPT-2 small has 124M
+parameters and IOI prompts are about 15 tokens. Ollama's Vulkan GPU use does not carry over:
+Ollama runs quantized GGUF models without activation access, and PyTorch does not use
+Vulkan. `pip install --dry-run transformer-lens` showed torch and numpy kept, about 50
+packages added (mostly via `transformers`, `datasets`, `wandb`).
+
+**Library.** TransformerLens 4.2.0 (PyPI says Python >= 3.10, < 4.0). Unexpected: the
+`HookedTransformer` API we all remember was removed in 4.0 (the import error names the
+replacement). Models now load through the bridge:
+
+```python
+from transformer_lens.model_bridge import TransformerBridge
+model = TransformerBridge.boot_transformers("gpt2")
+model.enable_compatibility_mode()
+```
+
+`enable_compatibility_mode()` reproduces the old numerics (LayerNorm folded into the
+weights, writing and unembedding matrices centered), which the IOI literature assumes.
+Loaded config: 12 layers, 12 heads, $d_\text{model}=768$, vocabulary 50,257.
+
+**Hook names (read off the cache, `part2_gpt2_ioi/explore.py`).**
+
+| Part 1 (`hooks.py`) | GPT-2 via the bridge | Shape |
+|---|---|---|
+| `layers.L.hook_z` | `blocks.L.attn.hook_z` | (batch, pos, head, 64) |
+| `layers.L.hook_pattern` | `blocks.L.attn.hook_pattern` | (batch, head, query, key) |
+| (residual in) | `blocks.L.hook_resid_pre`, `hook_resid_mid`, `hook_resid_post` | (batch, pos, 768) |
+| (attention output) | `blocks.L.hook_attn_out` | (batch, pos, 768) |
+| none (no MLP in Part 1) | `blocks.L.hook_mlp_out`, `mlp.hook_pre`, `mlp.hook_post` | (batch, pos, 768) |
+| none (no LayerNorm in Part 1) | `blocks.L.ln1.hook_scale`, `ln2.hook_scale`, `ln_final.hook_scale` | (batch, pos, 1) |
+| logits | `hook_unembed` | (batch, pos, 50257) |
+
+The bridge also exposes duplicate `hook_in` / `hook_out` entries for every wrapped
+submodule; we use the plain names above. Note the axis order of `hook_z` (position before
+head): check it before reusing Part 1 hook code.
+
+**Why the new hooks matter.** Part 1's direct logit attribution was exact because there was
+no LayerNorm. Here the final LayerNorm divides each position's residual by a scalar
+(`ln_final.hook_scale`). With the folded weights the logits are
+$\text{logits}=\dfrac{x_\text{final}}{s}\,W_U$, so, treating the cached $s$ as a constant,
+each component's contribution is still an exact linear piece, divided by $s$.
+
+**Baseline.** Tokens (15, including `<|endoftext|>`): `When`, ` Mary`, ` and`, ` John`,
+` went`, ` to`, ` the`, ` store`, `,`, ` John`, ` gave`, ` a`, ` drink`, ` to`. At the last
+position: logit(` Mary`) 18.47, logit(` John`) 15.10, so $\mathrm{LD}=3.36$. Top five:
+` Mary`, ` them`, ` the`, ` John`, ` her`. GPT-2 small solves this prompt (IO is top-1,
+S fourth), with a modest margin. Correction of my own message: I said 16 tokens; it is 15.
+
+## 2.2 The IOI dataset and the baseline
+
+**Code:** `part2_gpt2_ioi/ioi_data.py` (`make_prompts`, `build_batch`, `logit_diff`).
+
+**Design.** Three templates (opening clause varies: "When ... went to the", "Then, ... had a
+lot of fun at the", "After ... went to the"), 12 single-token names (checked with
+`single_token_names`: all 12 pass), 6 places, 6 objects, both name orders. In ABBA the first
+name is the IO and the second is the subject S, in BABA the order is reversed, so the
+repeated name is mentioned second and last, or first and last. Each prompt comes with a
+corrupted twin ("ABC"): the final subject is replaced by a third name C that appears nowhere
+else, so the two prompts differ in exactly one token and the corrupted one has no repeated
+name. Token lengths: 15, 20 and 15 for templates 0, 1, 2 (one length per template, so each
+template is one batch). The generator uses its own `random.Random(seed)`; changing the
+number of names drawn per prompt changes the stream, so prompts from before the ABC edit
+no longer reappear.
+
+**Metric.** $\mathrm{LD}=\text{logit}(\text{IO})-\text{logit}(\text{S})$ at the last position.
+
+**Baseline (900 prompts, about 300 per template).**
+
+| Template | Order | n | Clean LD (frac > 0) | Corrupted LD (frac > 0) |
+|---|---|---|---|---|
+| 0 | ABBA | 150 | 3.24 (1.00) | 0.68 (0.71) |
+| 0 | BABA | 146 | 4.09 (1.00) | -0.62 (0.28) |
+| 1 | ABBA | 139 | 3.46 (1.00) | 0.92 (0.76) |
+| 1 | BABA | 154 | 3.36 (1.00) | -0.92 (0.24) |
+| 2 | ABBA | 165 | 3.02 (1.00) | 0.94 (0.76) |
+| 2 | BABA | 146 | 3.04 (0.99) | -0.85 (0.26) |
+
+![Mean logit difference, clean vs corrupted, by template and order](figures/ioi_baseline.png)
+
+_Figure drawn from the table (not generated by a repo script)._
+
+**Predictions and outcomes.**
+- *Clean LD 2 to 4 and fraction above 0 at least 0.9:* holds (3.02 to 4.09, fraction at least
+  0.99; BABA in template 0 is a little above 4). GPT-2 small solves the task on essentially
+  every prompt.
+- *Corrupted mean within about +-1:* holds (-0.92 to 0.94).
+- *Corrupted fraction above 0 near 0.5:* **wrong in an informative way.** It is 0.71 to 0.76
+  for ABBA and 0.24 to 0.28 for BABA in all three templates. In ABBA the IO is the first
+  name, in BABA the S is the first name, so in both orders the model prefers the **first**
+  name about three times in four when no name repeats (a positional or first-mention bias,
+  which is not yet explained). Pooled over orders the mean and the fraction come out near
+  0 and 0.5 only because the two orders cancel.
+- *ABBA and BABA clean means within 1:* holds (0.85 for template 0, under 0.2 elsewhere).
+
+**Consequence for the next steps.** The corrupted baseline is not zero per order: it is about
++0.8 for ABBA and -0.8 for BABA. Three rules follow: report the two orders separately or
+keep them balanced; normalize patching effects per prompt with that prompt's own clean and
+corrupted values (as in Part 1), not with a pooled corrupted mean; and treat the
+"first-name preference" as a second behavior in the model that the IOI circuit has to
+override, which also shows that the corrupted run is not "the model knows nothing".
 
 ---
 
